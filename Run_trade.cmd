@@ -2,9 +2,9 @@
 setlocal
 cd /d "%~dp0"
 set PYTHONUTF8=1
-title EVE Trader
+title New Eden: Black Market
 cls
-echo EVE Trader: market scan, route calculation, HTML report.
+echo New Eden: Black Market - market scan, route calculation, HTML report.
 echo This can take a few minutes. Keep this window open.
 python -u Run_trade.py
 if errorlevel 1 goto failed

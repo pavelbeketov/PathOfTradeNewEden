@@ -1,4 +1,4 @@
-# EVE Online Trader
+# New Eden: Black Market
 
 A tool for finding market trades and planning a single route through five EVE Online regions. It downloads market orders through EVE ESI, plans purchases and sales within a shared budget, cash reserve, and cargo capacity, then generates an HTML report with a step-by-step trading plan.
 
