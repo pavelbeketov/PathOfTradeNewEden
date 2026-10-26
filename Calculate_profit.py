@@ -65,7 +65,8 @@ class Candidate:
                     max_units_by_budget=budget_units, max_units_final=units, max_profit_est=self.profit * units / 100)
 
 
-def build_candidates(dumps, settings, nav):
+def build_candidates(dumps, settings, nav, *, include_short=False):
+    """Build the full-loop book and optionally a separate station-level book."""
     sells, buys = defaultdict(list), defaultdict(list)
     skipped = defaultdict(int)
     now = utcnow()
@@ -107,45 +108,57 @@ def build_candidates(dumps, settings, nav):
     info, missing, errors = type_info(possible, settings)
     skipped['unknown_type_ids'] = missing
     skipped['metadata_errors'] = errors
-    out = []
+    out, short_out = [], []
     for tid in sorted(possible & info.keys()):
         meta = info[tid]
         capacity = math.floor(settings['cargo_m3'] / meta['volume_m3'])
         if capacity < 1:
             skipped['types_too_large'] += 1
             continue
-        def relevant_levels(book, reverse):
+        def relevant_levels(book, reverse, station_level=False):
             # Beyond one full hold of strictly better, unrestricted liquidity,
             # worse levels cannot improve any feasible trade at this region.
             # Orders with a minimum > 1 do not count as unrestricted liquidity.
             kept = []
-            per_region = defaultdict(list)
+            per_scope = defaultdict(list)
             for order in book:
-                per_region[order['region']].append(order)
-            for orders in per_region.values():
+                scope = order['location_id'] if station_level else order['region']
+                per_scope[scope].append(order)
+            # A six-stop chain may revisit a station and consume several holds.
+            coverage_limit = capacity * (5 if station_level else 1)
+            for orders in per_scope.values():
                 covered = 0
                 for order in sorted(orders, key=lambda o:(o['money'],o['order_id']), reverse=reverse):
                     minimum = min(order['min_volume'],order['volume_remain'])
                     if minimum > capacity:
                         continue
-                    if covered >= capacity:
+                    if covered >= coverage_limit:
                         break
                     kept.append(order)
                     if minimum <= 1:
                         covered += order['volume_remain']
             return kept
 
-        bb = sorted(relevant_levels(buys[tid], True), key=lambda o:(o['money'],o['order_id']))
-        prices = [o['money'] for o in bb]
-        for a in relevant_levels(sells[tid], False):
-            threshold = max(a['money'] + max(1, min_profit), math.ceil(a['money'] * mult - 1e-7))
-            for b in bb[bisect.bisect_left(prices, threshold):]:
-                if a['region'] == b['region']:
-                    continue
-                cap = min(a['volume_remain'],b['volume_remain'],capacity)
-                if cap > 0:
-                    out.append(Candidate(a,b,meta,a['money'],b['money'],cap))
+        def append_pairs(target, station_level=False):
+            bb = sorted(relevant_levels(buys[tid], True, station_level),
+                        key=lambda o:(o['money'],o['order_id']))
+            prices = [o['money'] for o in bb]
+            for a in relevant_levels(sells[tid], False, station_level):
+                threshold = max(a['money'] + max(1, min_profit), math.ceil(a['money'] * mult - 1e-7))
+                for b in bb[bisect.bisect_left(prices, threshold):]:
+                    if (a['location_id'] == b['location_id'] if station_level else a['region'] == b['region']):
+                        continue
+                    cap = min(a['volume_remain'],b['volume_remain'],capacity)
+                    if cap > 0:
+                        target.append(Candidate(a,b,meta,a['money'],b['money'],cap))
+
+        append_pairs(out)
+        if include_short:
+            append_pairs(short_out, station_level=True)
     print(f"Eligible order pairs: {len(out):,}; unresolved types excluded: {len(missing)}", flush=True)
+    if include_short:
+        print(f"Short-route station order pairs: {len(short_out):,}", flush=True)
+        return out, dict(skipped), short_out
     return out, dict(skipped)
 
 
@@ -181,22 +194,27 @@ def save_csv(rows, path):
 
 def main():
     from route_optimizer import optimize_loop
+    from short_route_optimizer import optimize_short_route
     started = time.perf_counter()
     settings = load_settings()
     dumps, manifest = load_snapshot(settings)
     snapshot_times = {r:{k:d['meta'].get(k) for k in ['downloaded_at_utc','checked_at_utc']} for r,d in dumps.items()}
     nav = Navigation(settings)
-    candidates, skipped = build_candidates(dumps, settings, nav)
+    candidates, skipped, short_candidates = build_candidates(dumps, settings, nav, include_short=True)
     rows = standalone_rows(candidates, settings, nav)
+    short_plan = optimize_short_route(short_candidates, settings, nav)
     plan = optimize_loop(candidates, settings, nav)
     analysis = dict(schema_version=2, generated_at_utc=iso_now(), snapshot_id=manifest['snapshot_id'],
                     snapshot_times=snapshot_times, settings=settings, settings_hash=settings_fingerprint(settings),
-                    skipped=skipped, candidate_count=len(candidates), rows=rows, plan=plan)
+                    skipped=skipped, candidate_count=len(candidates), rows=rows, plan=plan,
+                    short_plan=short_plan)
     atomic_json(RESULTS_DIR / 'arbitrage_top.json', rows)
     save_csv(rows, RESULTS_DIR / 'arbitrage_top.csv')
     atomic_json(RESULTS_DIR / 'analysis.json', analysis)
     print(f"Plan: {' -> '.join(plan['route'])}")
     print(f"Estimated profit: {plan['profit_isk']:,.2f} ISK; {plan['trade_count']} trades")
+    print(f"Short route: {short_plan['station_count']} stations; "
+          f"estimated profit {short_plan['profit_isk']:,.2f} ISK")
     print(f"Calculated in {time.perf_counter()-started:.1f}s. Run Make_report.py.")
 
 

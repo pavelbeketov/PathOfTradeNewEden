@@ -1,5 +1,5 @@
 # Make_report.py
-# Генерирует results/arbitrage_report.html из results/arbitrage_top.json/csv
+# Генерирует полный и короткий HTML-отчёты из results/analysis.json
 # Запуск: py .\Make_report.py
 
 import json
@@ -12,7 +12,7 @@ import sys
 
 from trader_common import (ROOT, DATA_DIR, atomic_text, load_settings, read_json,
                            settings_fingerprint, parse_time, utcnow)
-from route_report import render_route
+from route_report import render_route, render_short_route
 
 
 RESULTS_DIR = ROOT / "results"
@@ -20,6 +20,7 @@ RESULTS_DIR = ROOT / "results"
 JSON_PATH = RESULTS_DIR / "arbitrage_top.json"
 CSV_PATH = RESULTS_DIR / "arbitrage_top.csv"
 OUT_HTML = RESULTS_DIR / "arbitrage_report.html"
+OUT_SHORT_HTML = RESULTS_DIR / "short_route_report.html"
 
 def _to_float(x: Any) -> Optional[float]:
     if x is None:
@@ -97,17 +98,54 @@ def normalize(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
-def build_html(rows: List[Dict[str, Any]], analysis=None) -> str:
+def build_html(rows: List[Dict[str, Any]], analysis=None, short_mode=False) -> str:
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if short_mode:
+        rows = []
     rows_json = json.dumps(rows, ensure_ascii=False, allow_nan=False).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
-    route_html = render_route(analysis) if analysis else '<p>Запусти Calculate_profit.py для построения маршрута.</p>'
+    renderer = render_short_route if short_mode else render_route
+    route_html = renderer(analysis) if analysis else '<p>Запусти Calculate_profit.py для построения маршрута.</p>'
+    title = 'Короткий маршрут' if short_mode else 'EVE Arbitrage Report'
+    route_title = 'Короткий маршрут продаж' if short_mode else 'Route loop deals'
+    route_hint = 'До 6 станций · до 3 видов товара на закупку' if short_mode else 'План одного полного круга'
+    subtitle = 'Простой план покупок и продаж' if short_mode else 'Показываем все позиции из файла'
+    stat_text = (f'{analysis["short_plan"]["station_count"]} станций · {analysis["short_plan"]["total_jumps"]} прыжков'
+                 if short_mode and analysis else '…')
+    loop_current = '' if short_mode else ' aria-current="page"'
+    short_current = ' aria-current="page"' if short_mode else ''
+    table_html = '' if short_mode else """
+    <div class="panel">
+      <div class="sectionTitle">
+        <h2>Bulk deals (max_units_final &gt; 1)</h2>
+        <div class="hint">Сортируй кликом по колонкам: Buy/Sell, Max units, Max profit, Profit/unit</div>
+      </div>
+      <div class="tableWrap">
+        <table id="tblBulk">
+          <thead><tr id="hdrBulk"></tr></thead>
+          <tbody id="bodyBulk"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="sectionTitle">
+        <h2>Single deals (max_units_final = 1)</h2>
+        <div class="hint">Сортируй кликом по колонкам: Buy/Sell, Max profit</div>
+      </div>
+      <div class="tableWrap">
+        <table id="tblSingle">
+          <thead><tr id="hdrSingle"></tr></thead>
+          <tbody id="bodySingle"></tbody>
+        </table>
+      </div>
+    </div>"""
 
     return f"""<!doctype html>
 <html lang="ru">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>EVE Arbitrage Report</title>
+  <title>{title}</title>
 
   <link rel="preconnect" href="https://cdn.jsdelivr.net" />
   <style>
@@ -188,6 +226,9 @@ def build_html(rows: List[Dict[str, Any]], analysis=None) -> str:
       font-size: 12px;
       white-space: nowrap;
     }}
+    .reportNav {{ display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px; }}
+    .reportNav a {{ text-decoration:none;color:var(--cyan); }}
+    .reportNav a[aria-current="page"] {{ color:var(--text);background:rgba(79,227,255,.12);border-color:var(--cyan); }}
 
     .panel {{
       border: 1px solid var(--border);
@@ -420,44 +461,25 @@ def build_html(rows: List[Dict[str, Any]], analysis=None) -> str:
   <div class="wrap">
     <div class="topbar">
       <div>
-        <div class="title">EVE Arbitrage Report</div>
-        <div class="sub">Сгенерировано: {now} • показываем все позиции из файла</div>
+        <div class="title">{title}</div>
+        <div class="sub">Сгенерировано: {now} • {subtitle}</div>
       </div>
       <div class="controls">
-        <span class="chip" id="statChip">…</span>
+        <span class="chip" id="statChip">{stat_text}</span>
       </div>
     </div>
 
+    <nav class="reportNav" aria-label="Страницы результатов">
+      <a class="chip" href="arbitrage_report.html"{loop_current}>Полный круг и все сделки</a>
+      <a class="chip" href="short_route_report.html"{short_current}>Короткий маршрут · до 6 станций</a>
+    </nav>
+
     <div class="panel routePlan">
-      <div class="sectionTitle"><h2>Route loop deals</h2><div class="hint">План одного полного круга</div></div>
+      <div class="sectionTitle"><h2>{route_title}</h2><div class="hint">{route_hint}</div></div>
       {route_html}
     </div>
 
-    <div class="panel">
-      <div class="sectionTitle">
-        <h2>Bulk deals (max_units_final &gt; 1)</h2>
-        <div class="hint">Сортируй кликом по колонкам: Buy/Sell, Max units, Max profit, Profit/unit</div>
-      </div>
-      <div class="tableWrap">
-        <table id="tblBulk">
-          <thead><tr id="hdrBulk"></tr></thead>
-          <tbody id="bodyBulk"></tbody>
-        </table>
-      </div>
-    </div>
-
-    <div class="panel">
-      <div class="sectionTitle">
-        <h2>Single deals (max_units_final = 1)</h2>
-        <div class="hint">Сортируй кликом по колонкам: Buy/Sell, Max profit</div>
-      </div>
-      <div class="tableWrap">
-        <table id="tblSingle">
-          <thead><tr id="hdrSingle"></tr></thead>
-          <tbody id="bodySingle"></tbody>
-        </table>
-      </div>
-    </div>
+    {table_html}
   </div>
 
   <script>
@@ -700,6 +722,7 @@ def build_html(rows: List[Dict[str, Any]], analysis=None) -> str:
     const sortSingle = {{ key: "max_profit_est", dir: "desc" }};
 
     function refresh() {{
+      if (!document.getElementById("tblBulk")) return;
       const allSorted = rowsForStats(ALL_ROWS);
       const st = computeStats(allSorted);
 
@@ -745,7 +768,8 @@ def main() -> None:
     settings = load_settings()
     analysis = read_json(RESULTS_DIR / "analysis.json")
     manifest = read_json(DATA_DIR / "scan_manifest.json")
-    if analysis.get("schema_version") != 2 or analysis.get("settings_hash") != settings_fingerprint(settings):
+    if (analysis.get("schema_version") != 2 or not isinstance(analysis.get("short_plan"), dict)
+            or analysis.get("settings_hash") != settings_fingerprint(settings)):
         raise ValueError("Настройки изменились или старый формат результатов: повтори Calculate_profit.py")
     if manifest.get("success") is not True or analysis.get("snapshot_id") != manifest.get("snapshot_id"):
         raise ValueError("Снимок изменился или сканирование неуспешно: повтори Order → Calculate")
@@ -754,8 +778,12 @@ def main() -> None:
         if not -60 <= age <= settings['max_snapshot_age_minutes'] * 60:
             raise ValueError("Результаты устарели. Повтори Order → Calculate → Make")
     rows = normalize(analysis['rows'])
-    atomic_text(OUT_HTML, build_html(rows, analysis))
+    full_html = build_html(rows, analysis)
+    short_html = build_html([], analysis, short_mode=True)
+    atomic_text(OUT_HTML, full_html)
+    atomic_text(OUT_SHORT_HTML, short_html)
     print(f"Saved: {OUT_HTML.resolve()}")
+    print(f"Saved: {OUT_SHORT_HTML.resolve()}")
 
 
 if __name__ == "__main__":
